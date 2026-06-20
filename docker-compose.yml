@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # --------------------------------------------------------
+  # 1. Database Layer
+  # --------------------------------------------------------
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: attenx_db
+      POSTGRES_USER: attenx_user
+      POSTGRES_PASSWORD: attenx_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attenx_user -d attenx_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------
+  # 2. AI Microservice (Python)
+  # --------------------------------------------------------
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G # InsightFace requires high memory for model loading
+
+  # --------------------------------------------------------
+  # 3. Backend (Spring Boot)
+  # --------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/attenx_db
+      - SPRING_DATASOURCE_USERNAME=attenx_user
+      - SPRING_DATASOURCE_PASSWORD=attenx_password
+      - SPRING_DATA_REDIS_HOST=redis
+      - AI_SERVICE_URL=http://ai-service:8000/api/v1/ai
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # --------------------------------------------------------
+  # 4. Frontend & Nginx Proxy
+  # --------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
